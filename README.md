@@ -29,7 +29,9 @@
 - 🔍 **模型连通性测试**：分级检测服务可达性 → 鉴权 → 模型存在性 → 极简推理，显示响应耗时
 - 🛡️ **安全门禁**：默认只读；写入须勾选授权并逐条弹窗确认，写入/连接/监控全部后台执行，界面不卡顿
 - 🎓 **工程 / 学习双模式**：工程模式直接给方案，学习模式引导提问、启发思考
-- 🖥️ **MCGS 组态设计助手**：从 PLC 程序或工艺描述派生组态素材（变量字典 / 设备通道 CSV / 画面设计书 / McgsScript），支持 McgsPro / 嵌入版 / 通用版 × PPI / Modbus / OPC，可一键自动写入 MCGS（纯 ctypes 实现，零第三方 UI 自动化依赖）
+- 🖼️ **组态参考图识别**：上传组态样式图片（如双罐液位系统图），视觉模型自动识别图中工业元件（水泵/水罐/阀门/液位仪表），归纳工艺后一键生成整套 MCGS 组态素材——需配置支持视觉的模型（GPT-4o / qwen-vl / llava 等）
+- 🖥️ **MCGS 组态设计助手**：从 PLC 程序、工艺描述或参考图派生组态素材（变量字典 / 设备通道 CSV / 画面设计书 / McgsScript），支持 McgsPro / 嵌入版 / 通用版 × PPI / Modbus / OPC，可一键自动写入 MCGS（纯 ctypes 实现，零第三方 UI 自动化依赖）
+- 🎯 **MCGS 智能检测与写入**：自动区分组态程序（McgsSetE/McgsSetPro）与模拟运行环境（CEEMU 等），误定位到运行环境时自动纠正到同目录组态程序；写入时自动新建工程或在已打开工程中操作，跨电脑即装即用
 - 🎨 **统一视觉主题**：卡片式面板、主次分明的按钮体系、可滚动 PLC 面板
 - 📋 **应用内日志查看器**：统一日志系统（文件 + 控制台 + 实时 UI），带级别过滤与颜色高亮，启动错误一目了然
 - 📦 **单文件 exe**：PyInstaller 打包，拷贝到其他 Windows 电脑双击即用，免安装
@@ -38,12 +40,14 @@
 
 ### 方式一：下载可执行文件（最简单）
 
-1. 到 [Releases](https://github.com/lingtongxinyv/STEP-7-AI-Agent/releases) 下载 `Step7AIAgent.exe`
+1. 到 [Releases](https://github.com/lingtongxinyv/PLC-AI-Agent/releases) 下载 `Step7AIAgent.exe`
 2. 双击运行（首次启动需解压，等待数秒）
 3. 右侧 **PLC 面板 → 启动模拟PLC**，然后直接对话，例如：
    - 「用模板生成一个星三角降压启动程序，切换时间 8 秒」
    - 「读取 VW100 的产量值」
    - 「电机正反转怎么设计？」
+   - 「做一套双罐液位控制的 MCGS 组态」
+   - 点输入框旁「图片」上传组态样式图（如工艺流程图），让 AI 按图设计组态
 
 > 单文件 exe 已内置全部运行依赖。使用本地模型需另行安装 [Ollama](https://ollama.com)；使用云端 API 需联网并填入 Key。
 
@@ -121,17 +125,17 @@ python main.py
 │   │   ├── ladder.py          # 梯形图模型/绘制 + .awl 导出
 │   │   └── stl_parser.py      # STL → 梯形图自动解析
 │   ├── scada/                 # MCGS 组态设计助手
-│   │   ├── mcgs_knowledge.py  # MCGS 知识库（语法/驱动/CSV 格式）
+│   │   ├── mcgs_knowledge.py  # MCGS 知识库（安装检测/exe 角色识别/语法/驱动/CSV 格式）
 │   │   ├── mcgs_csv.py        # 11 列设备通道 CSV 构建器
 │   │   ├── mcgs_script.py     # McgsScript 脚本生成
-│   │   ├── mcgs_templates.py  # 素材派生主入口
-│   │   └── mcgs_auto_writer.py# MCGS UI 自动化写入
+│   │   ├── mcgs_templates.py  # 素材派生主入口（含工艺关键词 I/O 推导）
+│   │   └── mcgs_auto_writer.py# MCGS UI 自动化写入（新建/打开工程、设备通道导入）
 │   ├── agent/
 │   │   ├── prompts.py         # 双模式系统提示词（含 I/O 地址库注入）
 │   │   ├── tools.py           # 工具定义与执行器
 │   │   ├── connectivity.py    # 模型连通性测试
 │   │   ├── probe.py           # 模型能力探测（延迟/工具调用/编程测验）与角色推断
-│   │   └── assistant.py       # 对话核心（流式 + 工具循环 + 多模型路由）
+│   │   └── assistant.py       # 对话核心（流式 + 工具循环 + 多模型路由 + 图片多模态）
 │   └── ui/
 │       ├── main_window.py     # 主窗口（STEP7 | MCGS | 日志 三 Tab）
 │       ├── theme.py           # 统一视觉主题（设计令牌 + 全局 QSS）

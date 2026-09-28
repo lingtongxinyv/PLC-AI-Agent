@@ -12,6 +12,9 @@ Agent 对话核心。
     ("delta", text)        回答增量
     ("error", text)        错误提示
 """
+import base64
+import mimetypes
+import os
 from openai import OpenAI
 
 from .prompts import build_system_prompt
@@ -20,6 +23,16 @@ from .tools import TOOL_SPECS, ToolExecutor
 from app.programs.templates import program_from_answer
 
 _MAX_TOOL_ROUNDS = 8
+
+
+def _image_to_data_url(path: str) -> str:
+    """把本地图片编码为 data URL，供多模态消息使用。"""
+    mime, _ = mimetypes.guess_type(path)
+    if not mime or not mime.startswith("image/"):
+        mime = "image/png"
+    with open(path, "rb") as f:
+        data = base64.b64encode(f.read()).decode("ascii")
+    return f"data:{mime};base64,{data}"
 
 # 任务分类关键词：命中任一 → 编程主力；否则 → 快速应答
 _TASK_CODING_HINTS = (
@@ -103,8 +116,24 @@ class Assistant:
             return coding, f"需调用工具 → {coding.get('model')}"
         return fast, f"简单问答/查询 → {fast.get('model')}"
 
-    def chat(self, user_text: str, event):
-        self.transcript.append({"role": "user", "content": user_text})
+    def chat(self, user_text: str, event, image_path: str = None):
+        # 构造用户消息：有图片时使用多模态内容（文本 + 图片）
+        if image_path:
+            try:
+                data_url = _image_to_data_url(image_path)
+            except Exception as e:
+                event("error", f"图片读取失败：{e}")
+                return
+            user_message = {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": user_text or "请根据这张组态参考图设计 MCGS 画面。"},
+                    {"type": "image_url", "image_url": {"url": data_url}},
+                ],
+            }
+        else:
+            user_message = {"role": "user", "content": user_text}
+        self.transcript.append(user_message)
 
         entry, reason = self._pick_model(user_text)
         try:
@@ -114,6 +143,8 @@ class Assistant:
             return
         if entry is not None:
             event("status", reason or f"本轮由 {model} 处理")
+        if image_path:
+            event("status", "正在分析组态参考图……")
 
         system_message = {
             "role": "system",
@@ -230,6 +261,13 @@ class Assistant:
     def _friendly_error(e) -> str:
         text = str(e)
         lowered = text.lower()
+        if any(k in lowered for k in ("image", "vision", "多模态", "图片",
+                                       "does not support", "unsupported")):
+            return (
+                "当前模型不支持图片识别：请在「设置」中切换到支持视觉的模型"
+                "（如 GPT-4o、qwen-vl、llava、deepseek-vl 等），"
+                "或改用文字描述画面中的元件（水泵/水罐/阀门等）后再试。"
+            )
         if "connection" in lowered or "connect" in lowered:
             return (
                 "无法连接模型服务：请确认 Ollama 已启动（命令：ollama serve），"

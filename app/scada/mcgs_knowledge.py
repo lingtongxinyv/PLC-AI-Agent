@@ -381,12 +381,31 @@ DATA_OBJECT_PROPERTIES = {
 
 # ---------------- MCGS 安装路径检测 ----------------
 
-# MCGS 各版本可执行文件名（用于注册表匹配 + 全盘搜索）
-MCGS_EXE_NAMES = {
-    "McgsPro": ["McgsPro.exe"],
-    "嵌入版": ["McgsE.exe"],
-    "通用版": ["Mcgs.exe"],
+# 各版本【组态环境】可执行文件名（编辑器）——这是自动化启动与操作的唯一目标
+MCGS_CONFIG_EXES = {
+    "McgsPro": ["mcgssetpro.exe"],
+    "嵌入版": ["mcgssete.exe"],
+    "通用版": ["mcgsset.exe"],
 }
+
+# 【运行/模拟环境】可执行文件名——直接打开工程运行，无编辑菜单，绝不能作为启动目标
+# CEEMU.exe = 嵌入版模拟运行环境；mcgs_app.exe = McgsPro 运行环境；
+# McgsCE.exe = 触摸屏运行环境
+MCGS_RUNTIME_EXES = [
+    "ceemu.exe", "mcgs_app.exe", "mcgsce.exe", "mcgsrun.exe",
+]
+
+# 辅助工具 exe——扫描时忽略
+MCGS_AUX_EXES = {
+    "unwise.exe", "unins000.exe", "setup.exe", "install.exe",
+    "mcgslogger.exe", "filetransporttool.exe", "devcon.exe", "datatrans.exe",
+}
+
+# 兼容旧引用：各版本组态环境主程序名
+MCGS_EXE_NAMES = {ver: list(names) for ver, names in MCGS_CONFIG_EXES.items()}
+
+# 全部已知组态环境 exe（小写集合）
+_ALL_CONFIG_EXES = {n for names in MCGS_CONFIG_EXES.values() for n in names}
 
 
 def _detect_version_from_exe_path(exe_path: str) -> str:
@@ -394,14 +413,86 @@ def _detect_version_from_exe_path(exe_path: str) -> str:
     import os
     name = os.path.basename(exe_path).lower()
     path_lower = exe_path.lower()
-    if name in ("mcgs_pro.exe", "mcgssetpro.exe") or "mcgspro" in path_lower:
+    if name in MCGS_CONFIG_EXES["McgsPro"] or "mcgspro" in path_lower:
         return "McgsPro"
-    if name == "mcgs_e.exe" or name == "mcgs.exe":
-        # MCGS 嵌入版 vs 通用版：路径含 MCGSE_EE 或单独 McgsE.exe
-        if "mcgse_ee" in path_lower or name == "mcgs_e.exe":
-            return "嵌入版"
+    if name in MCGS_CONFIG_EXES["嵌入版"]:
+        return "嵌入版"
+    if name in MCGS_CONFIG_EXES["通用版"]:
         return "通用版"
+    # 运行环境/未知 exe：按安装目录特征推断
+    if "mcgspro" in path_lower:
+        return "McgsPro"
+    if "mcgse" in path_lower:
+        return "嵌入版"
     return "通用版"  # 兜底
+
+
+def normalize_mcgs_exe_path(exe_path: str) -> str | None:
+    """把任何 MCGS 相关 exe 路径规范化为【组态环境】exe 路径。
+
+    - 已是组态环境主程序：原样返回
+    - 是运行/模拟环境（CEEMU.exe 等）：在其同目录查找组态环境主程序并返回
+      （嵌入版 CEEMU.exe 与 McgsSetE.exe 同处 Program 目录）
+    - 找不到组态环境：返回 None
+    """
+    import os
+    if not exe_path:
+        return None
+    name = os.path.basename(exe_path).lower()
+    if name in _ALL_CONFIG_EXES:
+        return exe_path
+    directory = os.path.dirname(exe_path)
+    # 优先按路径推断版本的组态程序，其次遍历全部已知组态程序
+    prefer_ver = _detect_version_from_exe_path(exe_path)
+    ordered = list(MCGS_CONFIG_EXES.get(prefer_ver, []))
+    for ver, names in MCGS_CONFIG_EXES.items():
+        if ver != prefer_ver:
+            ordered.extend(names)
+    for candidate in ordered:
+        candidate_path = os.path.join(directory, candidate)
+        if os.path.isfile(candidate_path):
+            return candidate_path
+    return None
+
+
+def _rank_candidates(candidates: list) -> str | None:
+    """从候选 exe 中选出最佳组态环境主程序路径。
+
+    规则：组态环境主程序 > 运行环境（运行环境反推同目录组态程序）；
+    组态程序内按 McgsPro > 嵌入版 > 通用版；全部失败返回 None。
+    """
+    import os
+    seen = set()
+    uniq = []
+    for c in candidates:
+        key = c.lower()
+        if key not in seen:
+            seen.add(key)
+            uniq.append(c)
+
+    def _config_score(path: str):
+        name = os.path.basename(path).lower()
+        for i, ver in enumerate(("McgsPro", "嵌入版", "通用版")):
+            if name in MCGS_CONFIG_EXES[ver]:
+                return i
+        return None
+
+    # 先在候选里直接找组态程序
+    best = None
+    best_score = 99
+    for c in uniq:
+        score = _config_score(c)
+        if score is not None and score < best_score:
+            best, best_score = c, score
+    if best:
+        return best
+
+    # 候选全是运行环境时，逐个反推同目录组态程序
+    for c in uniq:
+        normalized = normalize_mcgs_exe_path(c)
+        if normalized:
+            return normalized
+    return None
 
 
 def _search_registry() -> str | None:
@@ -457,19 +548,28 @@ def _search_registry() -> str | None:
                                     if " " in path:
                                         path = path.split(" ")[0]
                                     import os as _os
-                                    # 排除卸载器/安装器，但接受任何 MCGS 主程序名
                                     fn_lower = _os.path.basename(path).lower()
-                                    if fn_lower in ("unwise.exe", "unins000.exe", "setup.exe", "install.exe"):
+                                    if fn_lower in MCGS_AUX_EXES:
                                         continue
                                     if _os.path.isfile(path):
-                                        return path
-                                    # InstallLocation 可能是目录，尝试找 MCGS exe
+                                        normalized = normalize_mcgs_exe_path(path)
+                                        if normalized:
+                                            return normalized
+                                    # InstallLocation 可能是目录：收集其下全部
+                                    # MCGS 相关 exe 后统一排序
                                     if _os.path.isdir(path):
-                                        for dirpath, _, filenames in _os.walk(path):
+                                        found = []
+                                        for dirpath, dirnames, filenames in _os.walk(path):
+                                            depth = dirpath.count(_os.sep) - path.count(_os.sep)
+                                            if depth > 2:
+                                                dirnames.clear()
                                             for fn in filenames:
-                                                if fn.lower() in ("mcgspro.exe", "mcgs.exe", "mcgs_e.exe"):
-                                                    return _os.path.join(dirpath, fn)
-                                            break  # 只搜顶层
+                                                f_l = fn.lower()
+                                                if f_l.endswith(".exe") and f_l not in MCGS_AUX_EXES:
+                                                    found.append(_os.path.join(dirpath, fn))
+                                        ranked = _rank_candidates(found)
+                                        if ranked:
+                                            return ranked
                                 except OSError:
                                     pass
                     except OSError:
@@ -511,12 +611,14 @@ def _search_shortcuts() -> str | None:
                     capture_output=True, text=True, timeout=5,
                 )
                 target = result.stdout.strip()
-                # 排除卸载器/安装器，但接受任何 MCGS 相关 exe
                 fn_lower = os.path.basename(target).lower()
-                if fn_lower in ("unwise.exe", "unins000.exe", "setup.exe", "install.exe"):
+                if fn_lower in MCGS_AUX_EXES:
                     continue
                 if target and os.path.isfile(target):
-                    return target
+                    # 快捷方式可能指向 CEEMU 等运行环境，统一转为组态程序
+                    normalized = normalize_mcgs_exe_path(target)
+                    if normalized:
+                        return normalized
             except Exception:
                 continue
 
@@ -543,26 +645,18 @@ def _search_drives_fast() -> str | None:
             name_lower = root_entry.lower()
             if not any(k in name_lower for k in ("mcgs", "mcgspro", "mcgse")):
                 continue
-            # 在这个目录下找任何 MCGS 相关 exe（排除卸载器等辅助工具；
-            # 注意 mcgssetpro.exe 是 McgsPro 组态环境主程序，绝不能排除）
-            skip_names = {"unwise.exe", "unins000.exe", "setup.exe", "install.exe",
-                          "mcgslogger.exe", "filetransporttool.exe"}
+            # 收集 MCGS 相关 exe：忽略辅助工具；运行环境（CEEMU 等）也收集，
+            # 但排序时组态环境主程序绝对优先
             for dirpath, dirnames, filenames in os.walk(entry):
                 depth = dirpath.count(os.sep) - entry.count(os.sep)
                 if depth > 3:
                     dirnames.clear()  # 剪枝，只扫前 3 层
                 for fn in filenames:
                     fn_lower = fn.lower()
-                    if fn_lower.endswith(".exe") and fn_lower not in skip_names:
+                    if fn_lower.endswith(".exe") and fn_lower not in MCGS_AUX_EXES:
                         candidates.append(os.path.join(dirpath, fn))
 
-    if candidates:
-        # McgsPro 优先
-        for c in candidates:
-            if "mcgspro" in c.lower():
-                return c
-        return candidates[0]
-    return None
+    return _rank_candidates(candidates)
 
 
 def find_mcgs_installed() -> tuple:
@@ -604,8 +698,8 @@ MCGS 各素材导入方法：
 
 2. 设备通道 CSV（11 列）：
    - 嵌入版/通用版/McgsPro 均支持
-   - 嵌入版/通用版：组态环境 → 设备窗口 → 选中设备 → 右键 → "设备信息导入"
-   - McgsPro：组态环境 → 设备窗口 → 双击设备 → 右键 → "设备信息导入"
+   - 组态环境 → 设备窗口 → 设备组态 → 选中【子设备】构件 → 双击或右键「属性」
+     打开设备编辑窗口 → 点「设备信息导入」
    - 选择"设备通道.csv"按提示完成导入
    - 导入后变量自动与数据对象关联
    - 注意：McgsPro 要求驱动名称、驱动库路径、驱动版本与当前工程一致

@@ -14,10 +14,11 @@ class ChatWorker(QObject):
     scada = Signal(dict)
     finished = Signal()
 
-    def __init__(self, assistant, text: str):
+    def __init__(self, assistant, text: str, image_path: str = None):
         super().__init__()
         self._assistant = assistant
         self._text = text
+        self._image_path = image_path
 
     @Slot()
     def run(self):
@@ -36,7 +37,7 @@ class ChatWorker(QObject):
                 self.scada.emit(args[0])
 
         try:
-            self._assistant.chat(self._text, event)
+            self._assistant.chat(self._text, event, image_path=self._image_path)
         except Exception as e:  # 兜底，避免线程静默崩溃
             self.error.emit(f"对话处理异常：{e}")
         finally:

@@ -47,6 +47,7 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
+from PySide6.QtGui import QPixmap
 
 from app.agent.assistant import Assistant
 from app.agent.tools import ToolExecutor
@@ -134,15 +135,32 @@ class ChatPanel(QWidget):
         self.input_box.setFixedHeight(72)
         self.input_box.installEventFilter(self)
 
+        self.btn_image = QPushButton("图片")
+        self.btn_image.setToolTip("上传组态样式参考图，助手将根据图中元件自动设计 MCGS 画面")
+        self.btn_image.clicked.connect(self._pick_image)
+        self.img_thumb = QLabel()
+        self.img_thumb.setFixedSize(48, 48)
+        self.img_thumb.setStyleSheet(
+            "border:1px solid #888; background:#eee;"
+        )
+        self.img_thumb.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.img_thumb.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.img_thumb.mousePressEvent = self._clear_image
+        self.img_thumb.hide()
+
         self.btn_send = QPushButton("发送")
 
         bottom = QHBoxLayout()
         bottom.addWidget(self.input_box, 1)
+        bottom.addWidget(self.btn_image, 0, Qt.AlignmentFlag.AlignBottom)
+        bottom.addWidget(self.img_thumb, 0, Qt.AlignmentFlag.AlignBottom)
         bottom.addWidget(self.btn_send, 0, Qt.AlignmentFlag.AlignBottom)
 
         layout = QVBoxLayout(self)
         layout.addWidget(self.view, 1)
         layout.addLayout(bottom)
+
+        self._attached_image = None
 
     def eventFilter(self, obj, event):
         if obj is self.input_box and event.type() == QEvent.Type.KeyPress:
@@ -187,12 +205,41 @@ class ChatPanel(QWidget):
     def set_busy(self, busy: bool):
         self.btn_send.setEnabled(not busy)
         self.input_box.setEnabled(not busy)
+        self.btn_image.setEnabled(not busy)
 
     def current_input(self) -> str:
         return self.input_box.toPlainText().strip()
 
+    def current_image(self):
+        """返回当前附加的图片路径，无则返回 None。"""
+        return self._attached_image
+
     def clear_input(self):
         self.input_box.clear()
+        self._clear_image()
+
+    def _pick_image(self):
+        path, _ = QFileDialog.getOpenFileName(
+            self, "选择组态参考图", "",
+            "图片文件 (*.png *.jpg *.jpeg *.bmp *.webp *.gif);;所有文件 (*.*)"
+        )
+        if not path:
+            return
+        pix = QPixmap(path)
+        if pix.isNull():
+            QMessageBox.warning(self, "提示", "无法读取该图片，请换一张。")
+            return
+        self._attached_image = path
+        self.img_thumb.setPixmap(pix.scaled(
+            48, 48, Qt.AspectRatioMode.KeepAspectRatio,
+            Qt.TransformationMode.SmoothTransformation))
+        self.img_thumb.setToolTip(f"已附加：{path}\n点击缩略图可移除")
+        self.img_thumb.show()
+
+    def _clear_image(self, _event=None):
+        self._attached_image = None
+        self.img_thumb.clear()
+        self.img_thumb.hide()
 
     def _frag(self, idx: int, text: str) -> str:
         """带缓存的 markdown→html：文本未变时直接复用，流式期间只重渲染最后一条。"""
@@ -806,11 +853,18 @@ class ScadaPanel(QWidget):
         self.cmb_protocol.blockSignals(False)
 
     def _manual_locate_mcgs(self):
-        """用户通过文件对话框手动选择 MCGS exe 路径。"""
+        """用户通过文件对话框手动选择 MCGS exe 路径。
+
+        若误选运行/模拟环境（CEEMU.exe 等），自动替换为同目录组态环境主程序。
+        """
         import os
-        from app.scada.mcgs_knowledge import _detect_version_from_exe_path
+        from app.scada.mcgs_knowledge import (
+            _detect_version_from_exe_path,
+            normalize_mcgs_exe_path,
+            MCGS_RUNTIME_EXES,
+        )
         path, _ = QFileDialog.getOpenFileName(
-            self, "选择 MCGS 组态软件", "",
+            self, "选择 MCGS 组态环境主程序（McgsSetE / McgsSetPro）", "",
             "可执行文件 (*.exe);;所有文件 (*.*)",
         )
         if not path:
@@ -818,30 +872,46 @@ class ScadaPanel(QWidget):
         if not os.path.isfile(path):
             QMessageBox.warning(self, "路径无效", f"文件不存在：\n{path}")
             return
+
+        normalized = normalize_mcgs_exe_path(path)
+        if not normalized:
+            QMessageBox.warning(
+                self, "无法识别组态环境",
+                f"所选文件不是 MCGS 组态环境主程序，且同目录未找到组态程序：\n{path}\n\n"
+                "请选择 McgsSetE.exe（嵌入版）或 McgsSetPro.exe（McgsPro）。")
+            return
+
+        note = ""
+        if os.path.basename(path).lower() in MCGS_RUNTIME_EXES:
+            note = f"（检测到运行环境 {os.path.basename(path)}，已自动定位组态程序）"
+        path = normalized
         ver = _detect_version_from_exe_path(path)
         self.mcgs_exe_path = path
         self.lbl_mcgs_status.setText(f"✓ {ver}")
         self.lbl_mcgs_status.setStyleSheet("color: #1a7f37; font-weight: bold;")
-        self.lbl_mcgs_path.setText(f"📁 {path}（手动定位）")
+        self.lbl_mcgs_path.setText(f"📁 {path}（手动定位）{note}")
         self.btn_start_mcgs.setEnabled(True)
         idx = self.cmb_version.findText(ver)
         if idx >= 0:
             self.cmb_version.setCurrentIndex(idx)
 
     def _start_mcgs(self):
-        """启动 MCGS 组态软件（独立进程）。"""
+        """启动 MCGS 组态环境（独立进程）。"""
         if not self.mcgs_exe_path:
             return
         import os
         import subprocess
+        from app.scada.mcgs_knowledge import normalize_mcgs_exe_path
+        exe_path = normalize_mcgs_exe_path(self.mcgs_exe_path) or self.mcgs_exe_path
+        self.mcgs_exe_path = exe_path
         try:
-            work_dir = os.path.dirname(self.mcgs_exe_path)
+            work_dir = os.path.dirname(exe_path)
             subprocess.Popen(
-                [self.mcgs_exe_path],
+                [exe_path],
                 cwd=work_dir or None,
             )
             self.lbl_mcgs_path.setText(
-                "▶ 已启动 MCGS，请在组态环境中打开/新建工程。"
+                "▶ 已启动 MCGS 组态环境。写入时若无打开工程将自动新建工程。"
             )
         except Exception as e:
             QMessageBox.warning(self, "启动失败", str(e))
@@ -972,12 +1042,14 @@ class ScadaPanel(QWidget):
         # 确认对话框
         btn = QMessageBox.question(
             self, "🔄 自动写入 MCGS",
-            "将通过 UI 自动化把组态素材写入 MCGS 工程，包含 3 个步骤：\n\n"
-            "  ① 启动/激活 MCGS 组态环境\n"
-            "  ② 自动导入设备通道 CSV\n"
-            "  ③ 自动粘贴 McgsScript 脚本\n\n"
-            "⚠ 数据对象（变量）创建无法自动化，需手动在实时数据库新建。\n\n"
-            "请确保 MCGS 组态环境已打开（或允许自动启动），然后点「是」继续。",
+            "将通过 UI 自动化把组态素材写入 MCGS 工程：\n\n"
+            "  ① 启动/激活 MCGS 组态环境（不启动 CEEMU 等运行环境）\n"
+            "  ② 无打开工程时自动新建工程\n"
+            "  ③ 打开设备组态，在子设备属性中自动导入设备通道 CSV\n"
+            "  ④ 脚本装入剪贴板，打开脚本编辑器后 Ctrl+V\n\n"
+            "⚠ 数据对象（变量）创建无法自动化，需手动在实时数据库新建。\n"
+            "⚠ 自动化期间请不要移动鼠标或操作键盘。\n\n"
+            "点「是」继续。",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No,
         )
@@ -1719,16 +1791,21 @@ class MainWindow(QMainWindow):
     # ---------- 发送消息 ----------
     def _send_message(self):
         text = self.chat.current_input()
-        if not text or self._thread is not None:
+        image_path = self.chat.current_image()
+        if not text and not image_path or self._thread is not None:
             return
         self.chat.clear_input()
-        self.chat.add_message("user", text)
+        # 用户消息：文本 + 可能的图片缩略图
+        user_msg = text
+        if image_path:
+            user_msg = f"{text}\n\n[已附加组态参考图]" if text else "[已附加组态参考图]"
+        self.chat.add_message("user", user_msg)
         self.chat.begin_stream()
         self.chat.set_busy(True)
         self.statusBar().showMessage("正在思考……")
 
         self._thread = QThread()
-        self._worker = ChatWorker(self.assistant, text)
+        self._worker = ChatWorker(self.assistant, text, image_path)
         self._worker.moveToThread(self._thread)
         self._thread.started.connect(self._worker.run)
         self._worker.delta.connect(self.chat.append_stream)

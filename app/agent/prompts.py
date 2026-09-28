@@ -65,6 +65,9 @@ def build_system_prompt(mode: str, device_context: str, io_library: str = "") ->
    - 当用户描述工艺需求（如电机启停、传送带计数、温度控制）或要求「做组态/做画面/做MCGS」
      「接入昆仑通态」时，必须调用 generate_scada 工具，禁止在对话中直接手写 McgsScript 脚本或
      逐行粘贴 CSV 内容（防止手抄出错，与 PLC 程序模板共用同一原则）；
+   - 用户上传组态参考图时：先根据图中可见的工业元件（水泵、水罐/储罐、阀门/调节阀、
+     管道、传感器、仪表、按钮、指示灯等）归纳出工艺描述文本，再调用 generate_scada 的
+     craft_desc 参数传入；描述中务必包含图中标注的中文元件名称，以便变量派生命中关键词；
    - 调用方式：
      · 联动模式：传 template_key（已生成 PLC 程序的模板 key），从 io_table 派生变量；
      · 独立模式：传 craft_desc（工艺描述文本），按关键词派生典型 I/O；
